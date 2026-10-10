@@ -89,6 +89,93 @@ pub struct FanControlConfig {
     pub calibration: Option<FanCalibration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Vec<FanOverride>>,
+    /// Saved setups; the top-level mode/manual/curve/overrides mirror the active one.
+    /// Replaced wholesale when provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<Vec<FanProfile>>,
+    /// Setting this to a different profile id switches to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
+    /// Replaced wholesale when provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_switch: Option<FanProfileAutoSwitch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+pub struct FanProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<FanControlMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<ManualConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<GlobalCurveConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<Vec<FanOverride>>,
+}
+
+/// Profile ids to switch to when the power source changes.
+#[derive(Debug, Clone, Serialize, Deserialize, Object, Default, PartialEq)]
+pub struct FanProfileAutoSwitch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ac: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery: Option<String>,
+}
+
+impl FanControlConfig {
+    fn profiles_mut(&mut self) -> &mut Vec<FanProfile> {
+        self.profiles.get_or_insert_with(Vec::new)
+    }
+
+    /// Load a profile's settings into the live fields. Unknown ids are ignored.
+    pub fn activate_profile(&mut self, id: &str) {
+        let Some(p) = self.profiles_mut().iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        self.mode = p.mode;
+        self.manual = p.manual;
+        self.curve = p.curve;
+        self.overrides = p.overrides;
+        self.active_profile = Some(p.id);
+    }
+
+    /// Keep profiles consistent: at least one exists, the active one mirrors the live
+    /// fields, and auto-switch only points at existing profiles.
+    pub fn normalize_profiles(&mut self) {
+        if self.profiles_mut().is_empty() {
+            let default = FanProfile {
+                id: "default".into(),
+                name: "Default".into(),
+                mode: None,
+                manual: None,
+                curve: None,
+                overrides: None,
+            };
+            self.profiles_mut().push(default);
+            self.active_profile = Some("default".into());
+        }
+        let ids: Vec<String> = self.profiles_mut().iter().map(|p| p.id.clone()).collect();
+        let active_exists = self.active_profile.as_ref().is_some_and(|a| ids.contains(a));
+        if !active_exists {
+            self.activate_profile(&ids[0]);
+        }
+        let active = self.active_profile.as_ref();
+        if let Some(p) = self.profiles.iter_mut().flatten().find(|p| Some(&p.id) == active) {
+            p.mode = self.mode.clone();
+            p.manual = self.manual.clone();
+            p.curve = self.curve.clone();
+            p.overrides = self.overrides.clone();
+        }
+        if let Some(auto) = self.auto_switch.as_mut() {
+            auto.ac = auto.ac.take().filter(|id| ids.contains(id));
+            auto.battery = auto.battery.take().filter(|id| ids.contains(id));
+        }
+        if self.auto_switch == Some(FanProfileAutoSwitch::default()) {
+            self.auto_switch = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]

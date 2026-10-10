@@ -1,5 +1,7 @@
 # Unreleased
 
+- **NEW: Fan profiles** (#74): Save fan setups (mode, manual duty, curve, per-fan overrides) as named profiles and switch from the profile menu in the Fan Control header. Edits save to the active profile. Profiles can be assigned to **Plugged in** and **On battery** so the service switches automatically when the power source changes; picking one by hand lasts until the next change. Existing settings become a "Default" profile. Calibration stays shared across profiles.
+
 ## 0.5.5 - 2026-09-27
 
 - **NEW: Dashboard layout customization** (#73): Drag panels around, make them full or half width, or hide the ones you don't need. Hiding a panel also disables the feature. Good for disabling sections of the app that don't play nicely with your workflow.

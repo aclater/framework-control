@@ -69,6 +69,21 @@ fn apply_partial(merged: &mut Config, req: PartialConfig) {
         if let Some(ov) = fan.overrides {
             new_fan.overrides = if ov.is_empty() { None } else { Some(ov) };
         }
+        if let Some(profiles) = fan.profiles {
+            new_fan.profiles = Some(profiles);
+        }
+        if let Some(auto) = fan.auto_switch {
+            new_fan.auto_switch = Some(auto);
+        }
+        // Normalize first so pending live edits land in the outgoing profile before switching.
+        match fan.active_profile {
+            Some(id) if new_fan.active_profile.as_ref() != Some(&id) => {
+                new_fan.normalize_profiles();
+                new_fan.activate_profile(&id);
+            }
+            _ => {}
+        }
+        new_fan.normalize_profiles();
         merged.fan = new_fan;
     }
     if let Some(pow) = req.power {
@@ -201,13 +216,16 @@ fn load() -> Config {
     if let Ok(mut f) = File::open(&path) {
         let mut buf = String::new();
         if f.read_to_string(&mut buf).is_ok() {
-            if let Ok(cfg) = serde_json::from_str::<Config>(&buf) {
+            if let Ok(mut cfg) = serde_json::from_str::<Config>(&buf) {
                 info!("Loaded config from {:?}", path);
+                cfg.fan.normalize_profiles();
                 return cfg;
             }
         }
     }
-    Config::default()
+    let mut cfg = Config::default();
+    cfg.fan.normalize_profiles();
+    cfg
 }
 
 fn save(cfg: &Config) -> Result<(), String> {
@@ -218,4 +236,148 @@ fn save(cfg: &Config) -> Result<(), String> {
     let mut f = File::create(&path).map_err(|e| e.to_string())?;
     let s = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     f.write_all(s.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{FanControlConfig, FanControlMode, FanProfile, FanProfileAutoSwitch, ManualConfig};
+
+    fn fan_patch(fan: FanControlConfig) -> PartialConfig {
+        PartialConfig {
+            fan: Some(fan),
+            power: None,
+            battery: None,
+            updates: None,
+            telemetry: None,
+            ui: None,
+        }
+    }
+
+    fn profile(id: &str, duty: u32) -> FanProfile {
+        FanProfile {
+            id: id.into(),
+            name: id.into(),
+            mode: Some(FanControlMode::Manual),
+            manual: Some(ManualConfig { duty_pct: duty }),
+            curve: None,
+            overrides: None,
+        }
+    }
+
+    fn duty(cfg: &Config) -> u32 {
+        cfg.fan.manual.as_ref().unwrap().duty_pct
+    }
+
+    fn profile_duty(cfg: &Config, id: &str) -> u32 {
+        let p = cfg.fan.profiles.as_ref().unwrap().iter().find(|p| p.id == id).unwrap();
+        p.manual.as_ref().unwrap().duty_pct
+    }
+
+    fn two_profiles() -> Config {
+        let mut cfg = Config::default();
+        cfg.fan.mode = Some(FanControlMode::Manual);
+        cfg.fan.manual = Some(ManualConfig { duty_pct: 30 });
+        cfg.fan.profiles = Some(vec![profile("home", 30), profile("quiet", 10)]);
+        cfg.fan.active_profile = Some("home".into());
+        cfg
+    }
+
+    #[test]
+    fn legacy_config_becomes_default_profile() {
+        let mut cfg = Config::default();
+        cfg.fan.mode = Some(FanControlMode::Manual);
+        cfg.fan.manual = Some(ManualConfig { duty_pct: 42 });
+        cfg.fan.normalize_profiles();
+        assert_eq!(cfg.fan.active_profile.as_deref(), Some("default"));
+        assert_eq!(profile_duty(&cfg, "default"), 42);
+    }
+
+    #[test]
+    fn edits_are_mirrored_into_active_profile() {
+        let mut cfg = two_profiles();
+        apply_partial(
+            &mut cfg,
+            fan_patch(FanControlConfig {
+                manual: Some(ManualConfig { duty_pct: 55 }),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(profile_duty(&cfg, "home"), 55);
+        assert_eq!(profile_duty(&cfg, "quiet"), 10);
+    }
+
+    #[test]
+    fn switching_loads_profile_and_keeps_calibration() {
+        let mut cfg = two_profiles();
+        cfg.fan.calibration = Some(crate::types::FanCalibration {
+            updated_at: 1,
+            fans: vec![],
+        });
+        apply_partial(
+            &mut cfg,
+            fan_patch(FanControlConfig {
+                active_profile: Some("quiet".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(cfg.fan.active_profile.as_deref(), Some("quiet"));
+        assert_eq!(duty(&cfg), 10);
+        assert!(cfg.fan.calibration.is_some());
+        assert_eq!(profile_duty(&cfg, "home"), 30);
+    }
+
+    #[test]
+    fn stale_profile_list_cannot_overwrite_active_settings() {
+        let mut cfg = two_profiles();
+        cfg.fan.manual = Some(ManualConfig { duty_pct: 70 });
+        cfg.fan.normalize_profiles();
+        let mut renamed = vec![profile("home", 30), profile("quiet", 10)];
+        renamed[0].name = "Home".into();
+        apply_partial(
+            &mut cfg,
+            fan_patch(FanControlConfig {
+                profiles: Some(renamed),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(cfg.fan.profiles.as_ref().unwrap()[0].name, "Home");
+        assert_eq!(profile_duty(&cfg, "home"), 70);
+        assert_eq!(duty(&cfg), 70);
+    }
+
+    #[test]
+    fn deleting_active_profile_falls_back_and_clears_assignments() {
+        let mut cfg = two_profiles();
+        cfg.fan.auto_switch = Some(FanProfileAutoSwitch {
+            ac: Some("home".into()),
+            battery: Some("quiet".into()),
+        });
+        apply_partial(
+            &mut cfg,
+            fan_patch(FanControlConfig {
+                profiles: Some(vec![profile("quiet", 10)]),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(cfg.fan.active_profile.as_deref(), Some("quiet"));
+        assert_eq!(duty(&cfg), 10);
+        let auto = cfg.fan.auto_switch.as_ref().unwrap();
+        assert_eq!(auto.ac, None);
+        assert_eq!(auto.battery.as_deref(), Some("quiet"));
+    }
+
+    #[test]
+    fn unknown_profile_id_is_ignored() {
+        let mut cfg = two_profiles();
+        apply_partial(
+            &mut cfg,
+            fan_patch(FanControlConfig {
+                active_profile: Some("missing".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(cfg.fan.active_profile.as_deref(), Some("home"));
+        assert_eq!(duty(&cfg), 30);
+    }
 }

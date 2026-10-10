@@ -16,6 +16,7 @@
     import MultiSelect from "./MultiSelect.svelte";
     import GraphPanel from "./GraphPanel.svelte";
     import FanSelector from "./FanSelector.svelte";
+    import FanProfileMenu from "./FanProfileMenu.svelte";
     import {
         PANEL_HEADER_OVERLAY_CLASS,
         PANEL_HEADER_TOGGLE_CLASS,
@@ -512,7 +513,15 @@
         pollMs = globalCurve?.poll_ms ?? DEFAULTS.curve.poll_ms;
     }
 
+    let lastActiveProfile: string | null | undefined;
+
     function applyFanConfig(fan: FanControlConfig) {
+        // A different profile may not override the fan tab being edited.
+        if (fan.active_profile !== lastActiveProfile) {
+            lastActiveProfile = fan.active_profile;
+            activeFan = "all";
+            selectedIdx = null;
+        }
         switch (fan.mode) {
             case "manual":
                 mode = "Manual";
@@ -626,6 +635,22 @@
     }
 
     const save = throttleDebounce(doSave, 200, false, true);
+
+    async function updateProfiles(fanPatch: FanControlConfig) {
+        error = null;
+        try {
+            if (activeFan !== "all") commitOverrideFromEditor();
+            await doSave({ silent: true });
+            await patch({ fan: fanPatch });
+            // Own writes skip followConfig, so reload the editor for the newly active profile.
+            const fan = $configStore.config?.fan;
+            if (fan && fan.active_profile !== lastActiveProfile) {
+                applyFanConfig(fan);
+            }
+        } catch (e: unknown) {
+            error = e instanceof Error ? e.message : String(e);
+        }
+    }
 
     // Apply local mode changes
     $: if (onMountComplete && mode !== prevMode) {
@@ -860,6 +885,7 @@
 <svelte:window on:pointerup={endDrag} on:pointercancel={endDrag} />
 
 <div class={PANEL_HEADER_OVERLAY_CLASS}>
+    <FanProfileMenu fan={$configStore.config?.fan} update={updateProfiles} />
     <div
         class={PANEL_HEADER_TOGGLE_CLASS}
         role="radiogroup"
