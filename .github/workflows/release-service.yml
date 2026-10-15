@@ -287,9 +287,108 @@ jobs:
           gh release upload "$tag" "$STABLE_PATH" --clobber
           gh release upload "$tag" "$TARBALL_SHA_PATH" --clobber
 
+  build-rpm:
+    needs: [read-version, create-release]
+    if: needs.create-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported targets; each gets its own framework-control-service-x86_64.<dist>.rpm
+        include:
+          - dist: fc43
+            image: quay.io/fedora/fedora:43
+          - dist: fc44
+            image: quay.io/fedora/fedora:44
+          # Red Hat Universal Base Image: real RHEL content, no subscription needed.
+          # No RHEL 9: Framework's framework_tool release binary needs glibc 2.38.
+          - dist: el10
+            image: registry.access.redhat.com/ubi10/ubi:latest
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install tools
+        run: dnf install -y git rpm-build cargo gcc nodejs npm systemd-rpm-macros
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build RPM
+        shell: bash
+        env:
+          VERSION: ${{ needs.read-version.outputs.version }}
+          IS_PRERELEASE: ${{ needs.read-version.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          topDir="$RUNNER_TEMP/rpmbuild"
+          mkdir -p "$topDir/SOURCES" "$topDir/SPECS"
+          specPath="$topDir/SPECS/framework-control.spec"
+          sed "s/^Version:.*/Version:        $VERSION/" rpm/framework-control.spec > "$specPath"
+          git archive --prefix="framework-control-$VERSION/" -o "$topDir/SOURCES/framework-control-$VERSION.tar.gz" HEAD
+          defines=(--define "_topdir $topDir")
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            defines+=(--define "announcement_url https://raw.githubusercontent.com/ozturkkl/framework-control/dev/ANNOUNCEMENT.md")
+          fi
+          rpmbuild -bb "${defines[@]}" "$specPath"
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Scriptlets call systemctl, which can't run in a container
+          dnf install -y --setopt=tsflags=noscripts "$RUNNER_TEMP"/rpmbuild/RPMS/x86_64/framework-control-*.rpm
+          rpm -V framework-control
+          test -x /usr/bin/framework-control
+
+      - name: Create stable-named copy
+        shell: bash
+        env:
+          DIST: ${{ matrix.dist }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$RUNNER_TEMP"/rpmbuild/RPMS/x86_64/framework-control-*.rpm "$RUNNER_TEMP/out/framework-control-service-x86_64.$DIST.rpm"
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.dist }}
+          path: ${{ runner.temp }}/out/*.rpm
+          if-no-files-found: error
+
+  # UBI has no gh CLI, so the release upload runs on the plain runner
+  publish-rpm:
+    needs: [read-version, build-rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download RPM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rpm-*
+          path: ${{ runner.temp }}/rpms
+          merge-multiple: true
+
+      - name: Upload RPMs and their SHA to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.read-version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="$VERSION"
+          cd "$RUNNER_TEMP/rpms"
+          shaFile="$RUNNER_TEMP/rpm.sha256"
+          : > "$shaFile"
+          for rpm in framework-control-service-x86_64.*.rpm; do
+            echo "$(sha256sum "$rpm" | awk '{print $1}') *$rpm" >> "$shaFile"
+            gh release upload "$tag" "$rpm" --clobber -R "$REPO"
+          done
+          gh release upload "$tag" "$shaFile" --clobber -R "$REPO"
+
   create-sha256sums:
-    needs: [read-version, build-msi, build-linux]
-    if: needs.build-msi.result == 'success' && needs.build-linux.result == 'success'
+    needs: [read-version, build-msi, build-linux, publish-rpm]
+    if: needs.build-msi.result == 'success' && needs.build-linux.result == 'success' && needs.publish-rpm.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download individual SHA files and create SHA256SUMS
@@ -314,6 +413,7 @@ jobs:
           # Clean up individual SHA files from release
           gh release delete-asset "$tag" msi.sha256 --yes -R "$REPO" || true
           gh release delete-asset "$tag" tarball.sha256 --yes -R "$REPO" || true
+          gh release delete-asset "$tag" rpm.sha256 --yes -R "$REPO" || true
 
           echo "Created SHA256SUMS with all hashes"
 

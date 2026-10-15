@@ -1,5 +1,7 @@
 # Unreleased
 
+- **Linux/RPM** (#88): Releases now include Fedora and RHEL 10 RPMs (`framework-control-service-x86_64.<fcNN|elN>.rpm`) built from `rpm/framework-control.spec` by a new `build-rpm` release job. Installs to `/usr/bin` with the systemd unit, desktop entry, and icon, and enables the service. In-app updates are disabled for RPM installs.
+
 ## 0.5.5 - 2026-10-15
 
 - **NEW: Dashboard layout customization** (#73): Drag panels around, make them full or half width, or hide the ones you don't need. Hiding a panel also disables the feature. Good for disabling sections of the app that don't play nicely with your workflow.

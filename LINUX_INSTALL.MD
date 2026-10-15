@@ -55,6 +55,29 @@ yay -S framework-control-beta
 paru -S framework-control-beta
 ```
 
+### Fedora and RHEL (RPM)
+
+Each release includes an RPM per supported Fedora release and for RHEL 10, built from source by the release workflow (the RHEL build uses Red Hat's Universal Base Image). RHEL 9 is not supported: Framework's `framework_tool` release binary needs glibc 2.38, newer than RHEL 9 ships. It installs the binary to `/usr/bin`, the systemd unit, a desktop entry, and an icon, and enables and starts the service. `framework_tool` is downloaded automatically on first run if it is not already on `PATH`.
+
+```bash
+# Fedora
+sudo dnf install https://github.com/ozturkkl/framework-control/releases/latest/download/framework-control-service-x86_64.fc$(rpm -E %fedora).rpm
+# RHEL 10
+sudo dnf install https://github.com/ozturkkl/framework-control/releases/latest/download/framework-control-service-x86_64.el$(rpm -E %rhel).rpm
+```
+
+On Fedora Atomic desktops (Silverblue, Kinoite, Bazzite, etc.), layer it instead and reboot:
+
+```bash
+sudo rpm-ostree install https://github.com/ozturkkl/framework-control/releases/latest/download/framework-control-service-x86_64.fc$(rpm -E %fedora).rpm
+```
+
+In-app self-updates are disabled for the RPM because `dnf` owns the binary. To update, re-run the same `dnf install` command once a new release is out. On Fedora Atomic, swap the layered package with `sudo rpm-ostree uninstall framework-control --install <same URL>` and reboot. Pre-release RPMs are attached to the [pre-release](https://github.com/ozturkkl/framework-control/releases) itself.
+
+`framework_tool` is not in the Fedora or RHEL repositories, so when it isn't already on `PATH` the service downloads it to `/usr/bin/framework_tool`. The RPM owns that path, so `dnf remove` deletes it too. On Fedora Atomic `/usr` is read-only and the download fails; install `framework_tool` to `/usr/local/bin` yourself (see [Prerequisites](#1-install-framework_tool)).
+
+To build the RPM locally, see [`rpm/framework-control.spec`](rpm/framework-control.spec).
+
 ### NixOS
 
 `framework-control` is packaged in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/master/pkgs/by-name/fr/framework-control) with a NixOS module. Add this to your configuration:
@@ -185,7 +208,7 @@ Framework Control includes an auto-update system:
 3. Click "Install Update" to download and install the new version
 4. The service will restart automatically
 
-You can also update manually by re-running the install script.
+You can also update manually by re-running the install script. Package installs (AUR, RPM, NixOS) update through the package manager instead; in-app updates are disabled there.
 
 ## Uninstallation
 
@@ -209,6 +232,16 @@ sudo pacman -R framework-control-beta
 ```
 
 The package hooks stop and disable the systemd service before removal.
+
+### RPM installs
+
+```bash
+sudo dnf remove framework-control
+# or, on Fedora Atomic desktops:
+sudo rpm-ostree uninstall framework-control
+```
+
+The package scriptlets stop and disable the systemd service before removal. `/etc/framework-control/` is left in place; delete it to remove saved settings.
 
 ### NixOS installs
 
@@ -277,7 +310,7 @@ If it continues to fail, check the service logs.
 
 ### Immutable Distributions (Fedora Silverblue, Bazzite, etc.)
 
-The install script uses `/usr/local/bin` which is typically writable on immutable systems. If you encounter issues, you may need to use `rpm-ostree` or your distribution's preferred method for adding system binaries.
+On Fedora Atomic desktops, prefer layering the RPM with `rpm-ostree` (see [Fedora and RHEL (RPM)](#fedora-and-rhel-rpm)). The install script uses `/usr/local/bin`, which is typically writable on immutable systems, but the result isn't tracked by `rpm-ostree`.
 
 ## Security Notes
 

@@ -10,7 +10,7 @@ Local service (Windows + Linux) + Svelte web UI to monitor telemetry and control
 
 - Backend service: Rust (Tokio + Poem + poem-openapi) in `framework-control/service`
 - Frontend web UI: Svelte + Vite in `framework-control/web`
-- Packaging: WiX MSI for Windows (service registration, assets), automated install script + tarball for Linux
+- Packaging: WiX MSI for Windows (service registration, assets), automated install script + tarball for Linux, plus AUR and Fedora/RHEL RPM packages
 - Security: loopback-only API; CORS restricts browser-based cross-origin requests
 
 ### Backend Service (Rust)
@@ -82,6 +82,7 @@ Local service (Windows + Linux) + Svelte web UI to monitor telemetry and control
   - Config baked into binary at build time; runtime config stored at `/etc/framework-control/config.json`
   - Service runs as root (required for `framework_tool` EC access)
   - Updates via tarball download and service restart
+  - RPM packages (`rpm/framework-control.spec`): built from source per Fedora release and for RHEL 10 (UBI container) by the `build-rpm` release job, installed to `/usr/bin` with the unit in `/usr/lib/systemd/system/`; `FRAMEWORK_CONTROL_UPDATE_REPO` is left unset so in-app updates are disabled
 - Shortcuts: created on demand via `/api/shortcuts/create`
   - Windows: Start Menu + Desktop (.lnk with app mode or .url fallback)
   - Linux: Desktop entry in applications menu (~/.local/share/applications/framework-control.desktop) using xdg-open
